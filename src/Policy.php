@@ -61,7 +61,13 @@ final class Policy
         return $this->token;
     }
 
-    public function evaluatePackageVersion(PackageInterface $package, string $context): ?string
+    /**
+     * @param array<string, int>|null $firstSeenByKey first-seen timestamps from the ledger, keyed by
+     *                                                 "name@version_normalized@source_reference". Null means
+     *                                                 the ledger is not in play, so age falls back to the
+     *                                                 package's (spoofable) release date.
+     */
+    public function evaluatePackageVersion(PackageInterface $package, string $context, ?array $firstSeenByKey = null): ?string
     {
         if ($this->isPackageVersionExempt($package)) {
             return null;
@@ -70,15 +76,15 @@ final class Policy
         if ($this->isPackageVersionBlocked($package)) {
             return $this->describePolicyViolation($package, $context, 'is on the block list');
         }
-        
+
         if ($this->minimumAgeSeconds <= 0) {
             return null;
         }
 
-        if ($this->isPackageVersionTooNew($package)) {
+        if ($this->isPackageVersionTooNew($package, $firstSeenByKey)) {
             return $this->describePolicyViolation($package, $context, sprintf(
-                'is too new (released %s ago, minimum age is %s)',
-                self::formatDuration($this->getPackageVersionAgeInSeconds($package) ?? 0),
+                'is too new (%s old, minimum age is %s)',
+                self::formatDuration($this->getPackageVersionAgeInSeconds($package, $firstSeenByKey) ?? 0),
                 self::formatDuration($this->minimumAgeSeconds),
             ));
         }
@@ -104,15 +110,27 @@ final class Policy
         return false;
     }
 
-    private function isPackageVersionTooNew(PackageInterface $package): bool
+    /**
+     * @param array<string, int>|null $firstSeenByKey
+     */
+    private function isPackageVersionTooNew(PackageInterface $package, ?array $firstSeenByKey): bool
     {
-        $ageSeconds = $this->getPackageVersionAgeInSeconds($package);
+        $ageSeconds = $this->getPackageVersionAgeInSeconds($package, $firstSeenByKey);
 
         return $ageSeconds !== null && $ageSeconds < $this->minimumAgeSeconds;
     }
 
-    private function getPackageVersionAgeInSeconds(PackageInterface $package): ?int
+    /**
+     * @param array<string, int>|null $firstSeenByKey
+     */
+    private function getPackageVersionAgeInSeconds(PackageInterface $package, ?array $firstSeenByKey): ?int
     {
+        if ($firstSeenByKey !== null) {
+            $key = $package->getName() . '@' . $package->getVersion() . '@' . $package->getSourceReference();
+
+            return isset($firstSeenByKey[$key]) ? time() - $firstSeenByKey[$key] : null;
+        }
+
         $releaseDate = $package->getReleaseDate();
 
         if ($releaseDate === null) {

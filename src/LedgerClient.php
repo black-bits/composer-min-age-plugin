@@ -21,19 +21,20 @@ final class LedgerClient
 
     /**
      * @param PackageInterface[] $packages
+     * @return array<string, int> "name@version_normalized@source_reference" => first-seen unix timestamp
      */
-    public function report(array $packages): void
+    public function lookup(array $packages): array
     {
         $items = $this->buildItems($packages);
 
         if ($items === []) {
-            return;
+            return [];
         }
 
         $body = json_encode(['packages' => array_values($items)]);
 
         if ($body === false) {
-            return;
+            return [];
         }
 
         $headers = [
@@ -55,13 +56,19 @@ final class LedgerClient
                 'retry-auth-failure' => false,
             ]);
 
+            $firstSeen = $this->parseFirstSeen($response->getBody());
+
             $this->io->writeError(sprintf(
-                '<info>[composer-min-age] reported %d version(s) to ledger (HTTP %d)</info>',
+                '<info>[composer-min-age] ledger: %d of %d version(s) known</info>',
+                count($firstSeen),
                 count($items),
-                $response->getStatusCode(),
             ));
+
+            return $firstSeen;
         } catch (Throwable $e) {
-            $this->io->writeError('<warning>[composer-min-age] ledger report failed: ' . $e->getMessage() . '</warning>');
+            $this->io->writeError('<warning>[composer-min-age] ledger lookup failed: ' . $e->getMessage() . '</warning>');
+
+            return [];
         }
     }
 
@@ -90,5 +97,40 @@ final class LedgerClient
         }
 
         return $items;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function parseFirstSeen(?string $body): array
+    {
+        if ($body === null) {
+            return [];
+        }
+
+        $decoded = json_decode($body, true);
+        $results = is_array($decoded) ? ($decoded['results'] ?? []) : [];
+
+        if (!is_array($results)) {
+            return [];
+        }
+
+        $firstSeen = [];
+
+        foreach ($results as $result) {
+            if (!is_array($result) || !is_string($result['first_seen_at'] ?? null)) {
+                continue;
+            }
+
+            $timestamp = strtotime($result['first_seen_at']);
+
+            if ($timestamp === false) {
+                continue;
+            }
+
+            $firstSeen[$result['name'] . '@' . $result['version_normalized'] . '@' . $result['source_reference']] = $timestamp;
+        }
+
+        return $firstSeen;
     }
 }

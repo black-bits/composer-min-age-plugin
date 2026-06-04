@@ -110,21 +110,18 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
             $this->reportPrevented($prevented);
             $event->setPackages($kept);
         }
-
-        $this->reportToLedger($policy, $candidates);
     }
 
     public function onPreOperationsExec(InstallerEvent $event): void
     {
         $policy = Policy::fromComposer($this->composer);
 
-        $violations = [];
         $touched = [];
-        $resulting = [];
+        $evaluations = [];
 
-        // Packages this run installs, updates, or removes. Evaluate the version being installed/updated
-        // to, and record the name so the installed-repo pass below skips it (no double-check). Removals
-        // are recorded but not evaluated — a version that is leaving needn't be policed.
+        // Packages this run installs, updates, or removes. Record the name so the installed-repo pass
+        // below skips it (no double-check). Removals are recorded but not evaluated — a version that is
+        // leaving needn't be policed.
         foreach ($event->getTransaction()->getOperations() as $operation) {
             $package = $this->getPackageFromOperation($operation);
             if ($package === null) {
@@ -137,12 +134,7 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
                 continue;
             }
 
-            $resulting[] = $package;
-
-            $violation = $policy->evaluatePackageVersion($package, $operation->getOperationType() . ' operation');
-            if ($violation !== null) {
-                $violations[] = $violation;
-            }
+            $evaluations[] = [$package, $operation->getOperationType() . ' operation'];
         }
 
         // Packages already on disk that this run leaves untouched — catches a disallowed version no
@@ -152,28 +144,36 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
                 continue;
             }
 
-            $resulting[] = $package;
+            $evaluations[] = [$package, 'installed package'];
+        }
 
-            $violation = $policy->evaluatePackageVersion($package, 'installed package');
+        // Replace the spoofable release date with the ledger's first-seen age. One batched lookup for
+        // the whole resulting set; null means no endpoint configured, so each check falls back to the
+        // package's release date (unchanged behavior).
+        $firstSeenByKey = $this->lookupFirstSeen($policy, array_map(static fn (array $pair): PackageInterface => $pair[0], $evaluations));
+
+        $violations = [];
+
+        foreach ($evaluations as [$package, $context]) {
+            $violation = $policy->evaluatePackageVersion($package, $context, $firstSeenByKey);
             if ($violation !== null) {
                 $violations[] = $violation;
             }
         }
-
-        $this->reportToLedger($policy, $resulting);
 
         $this->enforceViolations($violations);
     }
 
     /**
      * @param PackageInterface[] $packages
+     * @return array<string, int>|null
      */
-    private function reportToLedger(Policy $policy, array $packages): void
+    private function lookupFirstSeen(Policy $policy, array $packages): ?array
     {
         $endpoint = $policy->getEndpoint();
 
         if ($endpoint === null) {
-            return;
+            return null;
         }
 
         $client = new LedgerClient(
@@ -183,7 +183,7 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
             new HttpDownloader($this->io, $this->composer->getConfig()),
         );
 
-        $client->report($packages);
+        return $client->lookup($packages);
     }
 
     private function getPackageFromOperation(OperationInterface $operation): ?PackageInterface
