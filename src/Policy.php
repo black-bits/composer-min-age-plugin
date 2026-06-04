@@ -19,6 +19,8 @@ final class Policy
         private int $minimumAgeSeconds,
         private array $blockedPackageVersions,
         private array $exemptedPackages,
+        private ?string $endpoint,
+        private ?string $token,
     ) {
     }
 
@@ -26,9 +28,11 @@ final class Policy
     {
         $global = self::getGlobalConfig($composer);
         $local = self::normalizeConfig($composer->getPackage()->getExtra()[self::CONFIG_KEY] ?? []);
+        $merged = array_merge($global, $local);
 
         // Global config is a floor: block lists combine and the stricter minimum age wins,
         // so a project cannot drop an org-wide block. Exemptions from both configs apply.
+        // endpoint/token are single values, so local overrides global when both are set.
         return new self(
             minimumAgeSeconds: max(
                 self::getMinimumAgeInSeconds($global['minimum-age'] ?? '0'),
@@ -42,7 +46,19 @@ final class Policy
                 (array) ($global['exempt-packages'] ?? []),
                 (array) ($local['exempt-packages'] ?? []),
             )),
+            endpoint: self::getStringConfig($merged['endpoint'] ?? null),
+            token: self::getStringConfig($merged['token'] ?? null),
         );
+    }
+
+    public function getEndpoint(): ?string
+    {
+        return $this->endpoint;
+    }
+
+    public function getToken(): ?string
+    {
+        return $this->token;
     }
 
     public function evaluatePackageVersion(PackageInterface $package, string $context): ?string
@@ -136,6 +152,17 @@ final class Policy
     private static function normalizeConfig(mixed $config): array
     {
         return is_array($config) ? $config : [];
+    }
+
+    private static function getStringConfig(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
     }
 
     private static function getExemptedPackages(mixed $configured): array

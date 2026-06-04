@@ -17,6 +17,7 @@ use Composer\Package\PackageInterface;
 use Composer\Plugin\PluginEvents;
 use Composer\Plugin\PluginInterface;
 use Composer\Plugin\PrePoolCreateEvent;
+use Composer\Util\HttpDownloader;
 use RuntimeException;
 
 final class Plugin implements PluginInterface, EventSubscriberInterface
@@ -84,10 +85,12 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
 
         // Drop disallowed *choosable* candidates so the solver picks an allowed version instead. This is the
         // graceful path and never aborts; onPreOperationsExec guarantees nothing disallowed stays installed.
+        $candidates = $event->getPackages();
+
         $kept = [];
         $prevented = [];
 
-        foreach ($event->getPackages() as $package) {
+        foreach ($candidates as $package) {
             if (isset($fixed[$package->getName() . '@' . $package->getVersion()])) {
                 $kept[] = $package;
                 continue;
@@ -107,6 +110,8 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
             $this->reportPrevented($prevented);
             $event->setPackages($kept);
         }
+
+        $this->reportToLedger($policy, $candidates);
     }
 
     public function onPreOperationsExec(InstallerEvent $event): void
@@ -115,6 +120,7 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
 
         $violations = [];
         $touched = [];
+        $resulting = [];
 
         // Packages this run installs, updates, or removes. Evaluate the version being installed/updated
         // to, and record the name so the installed-repo pass below skips it (no double-check). Removals
@@ -131,6 +137,8 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
                 continue;
             }
 
+            $resulting[] = $package;
+
             $violation = $policy->evaluatePackageVersion($package, $operation->getOperationType() . ' operation');
             if ($violation !== null) {
                 $violations[] = $violation;
@@ -144,13 +152,38 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
                 continue;
             }
 
+            $resulting[] = $package;
+
             $violation = $policy->evaluatePackageVersion($package, 'installed package');
             if ($violation !== null) {
                 $violations[] = $violation;
             }
         }
 
+        $this->reportToLedger($policy, $resulting);
+
         $this->enforceViolations($violations);
+    }
+
+    /**
+     * @param PackageInterface[] $packages
+     */
+    private function reportToLedger(Policy $policy, array $packages): void
+    {
+        $endpoint = $policy->getEndpoint();
+
+        if ($endpoint === null) {
+            return;
+        }
+
+        $client = new LedgerClient(
+            $endpoint,
+            $policy->getToken(),
+            $this->io,
+            new HttpDownloader($this->io, $this->composer->getConfig()),
+        );
+
+        $client->report($packages);
     }
 
     private function getPackageFromOperation(OperationInterface $operation): ?PackageInterface
