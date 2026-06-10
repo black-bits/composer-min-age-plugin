@@ -60,7 +60,7 @@ Composer plugins must be explicitly allowed (the `allow-plugins` line) or they w
 > composer config repositories.composer-min-age-plugin \
 >   '{"type":"vcs","url":"git@github.com:black-bits/composer-min-age-plugin.git"}'
 > composer config allow-plugins.black-bits/composer-min-age-plugin true
-> composer require black-bits/composer-min-age-plugin:^0.1
+> composer require black-bits/composer-min-age-plugin:^0.2
 > ```
 
 ## Configuration
