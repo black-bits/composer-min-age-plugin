@@ -20,7 +20,6 @@ final class Policy
         private array $blockedPackageVersions,
         private array $exemptedPackages,
         private ?string $endpoint,
-        private ?string $token,
     ) {
     }
 
@@ -32,7 +31,8 @@ final class Policy
 
         // Global config is a floor: block lists combine and the stricter minimum age wins,
         // so a project cannot drop an org-wide block. Exemptions from both configs apply.
-        // endpoint/token are single values, so local overrides global when both are set.
+        // endpoint is a single value, so local overrides global when both are set. The
+        // bearer token for the endpoint lives in Composer's auth.json, not here.
         return new self(
             minimumAgeSeconds: max(
                 self::getMinimumAgeInSeconds($global['minimum-age'] ?? '0'),
@@ -47,7 +47,6 @@ final class Policy
                 (array) ($local['exempt-packages'] ?? []),
             )),
             endpoint: self::getStringConfig($merged['endpoint'] ?? null),
-            token: self::getStringConfig($merged['token'] ?? null),
         );
     }
 
@@ -56,9 +55,9 @@ final class Policy
         return $this->endpoint;
     }
 
-    public function getToken(): ?string
+    public function getMinimumAgeSeconds(): int
     {
-        return $this->token;
+        return $this->minimumAgeSeconds;
     }
 
     /**
@@ -92,7 +91,7 @@ final class Policy
         return null;
     }
 
-    private function isPackageVersionExempt(PackageInterface $package): bool
+    public function isPackageVersionExempt(PackageInterface $package): bool
     {
         return in_array(strtolower($package->getName()), $this->exemptedPackages, true);
     }

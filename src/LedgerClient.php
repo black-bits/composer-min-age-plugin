@@ -13,7 +13,6 @@ final class LedgerClient
 {
     public function __construct(
         private string $endpoint,
-        private ?string $token,
         private IOInterface $io,
         private HttpDownloader $httpDownloader,
     ) {
@@ -37,14 +36,12 @@ final class LedgerClient
             return [];
         }
 
+        // Authentication is Composer-native: a bearer entry for the endpoint's host in
+        // auth.json is attached automatically by the HttpDownloader.
         $headers = [
             'Content-Type: application/json',
             'Accept: application/json',
         ];
-
-        if ($this->token !== null) {
-            $headers[] = 'Authorization: Bearer ' . $this->token;
-        }
 
         try {
             $response = $this->httpDownloader->get($this->endpoint, [

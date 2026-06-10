@@ -74,6 +74,7 @@ The entire policy lives in the `extra.composer-min-age` block and is managed wit
 | `minimum-age` | `0` (off) | Minimum release age, `<n>h` or `<n>d`. `0` disables the age check. |
 | `blocked-versions` | `{}` | Map of package name → one or more version constraints to refuse. |
 | `exempt-packages` | `[]` | Package **names** skipped by the policy entirely (age *and* block checks). Whole-package, not per-version. The plugin always exempts itself. |
+| `endpoint` | none | URL of a first-seen ledger (`/api/ledger/check`). When set, the age check uses the ledger's trusted first-seen timestamps instead of the spoofable release date. |
 
 Add `global` (`composer global config …`) to any command below to set the policy machine-wide instead of per project.
 
@@ -93,7 +94,7 @@ composer config extra.composer-min-age.minimum-age 0    # disabled (default)
 
 **Recommended: `24h` (`1d`).** A one-day floor is long enough that most malicious releases are detected before you'd install them, while barely slowing down normal updates. You can raise it (e.g. `3d`/`7d`) for stricter environments.
 
-IMPORTANT: The age check relies on the release date Composer gets from the package repository; versions with an unknown release date are allowed.
+IMPORTANT: Without a ledger `endpoint` (below), the age check relies on the release date Composer gets from the package repository — which an attacker can backdate — and versions with an unknown release date are allowed. Configure the ledger to gate on a trusted first-seen timestamp instead.
 
 ### Blocked versions
 
@@ -123,6 +124,24 @@ composer config extra.composer-min-age.exempt-packages --json '["vendor/trusted"
 # Remove all exemptions
 composer config --unset extra.composer-min-age.exempt-packages
 ```
+
+### Trusted first-seen ledger
+
+Git commit/tag dates — and therefore the release date the age check falls back to — are attacker-controllable. The companion ledger app watches Packagist and records, on its own clock, when each `(package, version, commit-SHA)` first became visible. Point the plugin at it and the age check gates on that trusted first-seen timestamp for the exact SHA being installed:
+
+```sh
+composer config extra.composer-min-age.endpoint https://your-ledger.example/api/ledger/check
+```
+
+The endpoint's bearer token is **not** part of the policy config — it lives in Composer's standard `auth.json` (per host), so it never ends up in a committed `composer.json`:
+
+```sh
+composer config [--global] bearer.your-ledger.example YOUR_TOKEN
+```
+
+Composer attaches it automatically when the plugin calls the endpoint.
+
+**When first-seen data is missing** (a version the ledger hasn't crawled yet, or the lookup fails), the plugin lists the affected versions, falls back to their self-reported release date for the age check, and asks whether to continue. Answering no aborts the run; non-interactive runs (CI) take the default and continue with the fallback. This fail-open posture is deliberate while the project is a proof of concept.
 
 ### Combining global and project config
 

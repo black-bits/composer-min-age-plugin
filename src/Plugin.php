@@ -87,6 +87,18 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
         // graceful path and never aborts; onPreOperationsExec guarantees nothing disallowed stays installed.
         $candidates = $event->getPackages();
 
+        // Filter the pool on the same trusted age source as the enforcement point: the ledger's
+        // first-seen. Null when no endpoint is configured, so this falls back to the package's
+        // release date — identical to the pre-ledger behavior.
+        $firstSeenByKey = $this->lookupFirstSeen($policy, $candidates);
+
+        if ($firstSeenByKey !== null) {
+            // Unknown tuples silently fall back to the release date here so the solver routes
+            // around versions that would fail the age check; the user is asked for consent at
+            // the enforcement point only, where it actually decides the run.
+            [$firstSeenByKey] = $this->mergeReleaseDateFallback($policy, $candidates, $firstSeenByKey);
+        }
+
         $kept = [];
         $prevented = [];
 
@@ -96,7 +108,7 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
                 continue;
             }
 
-            $violation = $policy->evaluatePackageVersion($package, 'candidate version');
+            $violation = $policy->evaluatePackageVersion($package, 'candidate version', $firstSeenByKey);
 
             if ($violation === null) {
                 $kept[] = $package;
@@ -150,7 +162,13 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
         // Replace the spoofable release date with the ledger's first-seen age. One batched lookup for
         // the whole resulting set; null means no endpoint configured, so each check falls back to the
         // package's release date (unchanged behavior).
-        $firstSeenByKey = $this->lookupFirstSeen($policy, array_map(static fn (array $pair): PackageInterface => $pair[0], $evaluations));
+        $evaluatedPackages = array_map(static fn (array $pair): PackageInterface => $pair[0], $evaluations);
+        $firstSeenByKey = $this->lookupFirstSeen($policy, $evaluatedPackages);
+
+        if ($firstSeenByKey !== null) {
+            [$firstSeenByKey, $unknown] = $this->mergeReleaseDateFallback($policy, $evaluatedPackages, $firstSeenByKey);
+            $this->confirmReleaseDateFallback($unknown);
+        }
 
         $violations = [];
 
@@ -178,12 +196,79 @@ final class Plugin implements PluginInterface, EventSubscriberInterface
 
         $client = new LedgerClient(
             $endpoint,
-            $policy->getToken(),
             $this->io,
             new HttpDownloader($this->io, $this->composer->getConfig()),
         );
 
         return $client->lookup($packages);
+    }
+
+    /**
+     * The ledger answered, but some versions have no first-seen record (not crawled yet, lookup
+     * failure, or no source reference). For those the only age signal left is the spoofable
+     * release date — merge it into the map so the age check still applies, and report which
+     * versions needed it.
+     *
+     * @param PackageInterface[] $packages
+     * @param array<string, int> $firstSeenByKey
+     * @return array{0: array<string, int>, 1: PackageInterface[]}
+     */
+    private function mergeReleaseDateFallback(Policy $policy, array $packages, array $firstSeenByKey): array
+    {
+        if ($policy->getMinimumAgeSeconds() <= 0) {
+            return [$firstSeenByKey, []];
+        }
+
+        $unknown = [];
+
+        foreach ($packages as $package) {
+            if ($policy->isPackageVersionExempt($package)) {
+                continue;
+            }
+
+            $key = $package->getName() . '@' . $package->getVersion() . '@' . $package->getSourceReference();
+
+            if (isset($firstSeenByKey[$key])) {
+                continue;
+            }
+
+            $unknown[$key] = $package;
+
+            $releaseDate = $package->getReleaseDate();
+
+            if ($releaseDate !== null) {
+                $firstSeenByKey[$key] = $releaseDate->getTimestamp();
+            }
+        }
+
+        return [$firstSeenByKey, array_values($unknown)];
+    }
+
+    /**
+     * @param PackageInterface[] $unknown
+     */
+    private function confirmReleaseDateFallback(array $unknown): void
+    {
+        if ($unknown === []) {
+            return;
+        }
+
+        $this->printList(
+            'No trusted first-seen data for these versions; their (spoofable) self-reported release date is the only age signal left:',
+            array_map(
+                static fn (PackageInterface $package): string => $package->getPrettyName() . ' ' . $package->getPrettyVersion(),
+                $unknown,
+            ),
+        );
+
+        // Default yes: fail-open by design (prototype). Non-interactive runs take the default.
+        if ($this->io->askConfirmation('<warning>[composer-min-age] Continue using the release-date fallback for them?</warning> [Y/n] ')) {
+            return;
+        }
+
+        throw new RuntimeException(
+            '[composer-min-age] Aborted: no trusted first-seen data for the listed versions and the release-date fallback was declined.'
+        );
     }
 
     private function getPackageFromOperation(OperationInterface $operation): ?PackageInterface
